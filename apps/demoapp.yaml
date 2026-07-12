@@ -1,0 +1,15 @@
+# One file describes the whole app across all environments.
+#   defaults      -> shared values, applied to every environment
+#   environments  -> per-environment overrides (only what differs)
+# Anything not set here falls back to a convention default in modules/app.
+workload: demoapp
+
+defaults:
+  location: australiaeast
+  instance_count: 1
+
+environments:
+  dev:
+    sku_name: B1
+  prod:
+    sku_name: B2

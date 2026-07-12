@@ -1,0 +1,96 @@
+name: Terraform (HCP CLI-driven)
+
+# Plan on every PR; apply dev -> prod on merge to main.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# GitHub only holds TF_API_TOKEN (to reach HCP). Runs execute REMOTELY in HCP
+# Terraform, which federates into Azure via OIDC — no Azure secrets anywhere in
+# GitHub or HCP. No -var-file is needed: the workspace name selects the
+# environment and its YAML config.
+env:
+  TF_CLOUD_ORGANIZATION: AzureArchitectAU # <-- your HCP org
+  TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
+  TF_IN_AUTOMATION: "true"
+  CONFIG_DIR: terraform-azure-app
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # PR: speculative plan for both environments (no apply).
+  # ---------------------------------------------------------------------------
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, prod]
+    defaults:
+      run:
+        working-directory: ${{ env.CONFIG_DIR }}
+    env:
+      TF_WORKSPACE: app-${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan (${{ matrix.environment }})
+        run: terraform plan -input=false
+
+  # ---------------------------------------------------------------------------
+  # main: apply dev, then prod (targets the Prod subscription).
+  # ---------------------------------------------------------------------------
+  apply-dev:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: ${{ env.CONFIG_DIR }}
+    env:
+      TF_WORKSPACE: app-dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+      - run: terraform init -input=false
+      - run: terraform apply -auto-approve -input=false
+
+  apply-prod:
+    if: github.event_name == 'push'
+    needs: apply-dev
+    runs-on: ubuntu-latest
+    # Attach a GitHub "prod" Environment with required reviewers so this
+    # job pauses for manual approval before touching the Prod subscription.
+    environment: prod
+    defaults:
+      run:
+        working-directory: ${{ env.CONFIG_DIR }}
+    env:
+      TF_WORKSPACE: app-prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+      - run: terraform init -input=false
+      - run: terraform apply -auto-approve -input=false
