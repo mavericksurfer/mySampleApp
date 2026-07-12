@@ -15,7 +15,7 @@ env:
   TF_CLOUD_ORGANIZATION: AzureArchitectAU # <-- your HCP org
   TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
   TF_IN_AUTOMATION: "true"
-  CONFIG_DIR: terraform-azure-app
+  CONFIG_DIR: .
 
 permissions:
   contents: read

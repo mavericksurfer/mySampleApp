@@ -1,0 +1,42 @@
+# --- Terraform ---------------------------------------------------------------
+
+# Local .terraform working directory (provider/module cache, backend config).
+# This is what's pulling in those provider LICENSE.txt files and the local
+# terraform.tfstate backend cache — none of it belongs in git.
+**/.terraform/*
+.terraform.lock.hcl
+# State files. With HCP remote state you shouldn't have these locally, but
+# ignore them so a stray local run never commits state (may contain secrets).
+*.tfstate
+*.tfstate.*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Saved plan output
+*.tfplan
+
+# .tfvars often hold secrets. This project uses committed YAML under apps/
+# for config, so there are none to track — but keep this as a guardrail.
+*.tfvars
+*.tfvars.json
+
+# Override files are meant for local, uncommitted tweaks
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local CLI config / credentials
+.terraformrc
+terraform.rc
+
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored — commit it so
+# provider versions are reproducible across your machine, CI, and HCP.
+
+# --- OS / editor -------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
