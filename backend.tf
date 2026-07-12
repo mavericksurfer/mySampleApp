@@ -7,10 +7,10 @@ terraform {
   # The specific workspace is chosen at runtime via the TF_WORKSPACE
   # environment variable (set per-environment in the GitHub workflow).
   cloud {
-    organization = "my-hcp-org" # <-- change to your HCP Terraform org
+    organization = "AzureArchitectAU" # <-- change to your HCP Terraform org
 
     workspaces {
-      tags = ["app", "azure"]
+      tags = ["demoapp", "azure"]
     }
   }
 

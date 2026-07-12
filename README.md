@@ -98,8 +98,8 @@ Create `dev` and `prod` under Settings → Environments; add **required
 reviewers** to `prod` so `apply-prod` pauses for approval.
 
 ### 6. Update the placeholders
-- `backend.tf`: `organization = "my-hcp-org"`
-- `.github/workflows/terraform.yml`: `TF_CLOUD_ORGANIZATION: my-hcp-org`
+- `backend.tf`: `organization = "AzureArchitectAU"`
+- `.github/workflows/terraform.yml`: `TF_CLOUD_ORGANIZATION: AzureArchitectAU`
 - federated-credential `subject`s: your org/project names
 
 ## Run it locally (CLI-driven, same as CI)
