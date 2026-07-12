@@ -5,4 +5,10 @@
 provider "azurerm" {
   features {}
   use_oidc = true
+
+  # Only register the small "core" set of resource providers (includes
+  # Microsoft.Web) instead of azurerm's full legacy list. This avoids trying to
+  # register providers this app never uses (e.g. Microsoft.HDInsight), which on
+  # a fresh subscription can 409 against Azure's own background registration.
+  resource_provider_registrations = "core"
 }
