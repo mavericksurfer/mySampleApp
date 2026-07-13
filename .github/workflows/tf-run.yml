@@ -1,0 +1,76 @@
+name: tf-run (reusable)
+
+# Reusable "run Terraform against one workspace" definition. Every trigger in
+# terraform.yml (PR matrix plan, push dev/prod apply, manual dispatch) calls
+# this with different inputs, so the init/plan/apply logic lives in ONE place.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target environment (dev, prod). Maps to workspace app-<environment>.
+        type: string
+        required: true
+      action:
+        description: "Terraform action: plan or apply."
+        type: string
+        required: true
+      auto_approve:
+        description: If applying, auto-confirm. false = park the run in HCP for manual confirmation.
+        type: boolean
+        default: false
+      working_directory:
+        description: Directory containing the Terraform config.
+        type: string
+        default: "."
+      terraform_version:
+        description: Terraform CLI version for the runner (change here to align with the HCP workspace version).
+        type: string
+        default: "1.9.8"
+    secrets:
+      tf_api_token:
+        description: HCP Terraform API token (authenticates the runner to HCP).
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Attach the GitHub Environment gate ONLY for applies. Plans never require
+    # approval, so an empty environment name (skipped) is used for plan. This is
+    # what lets the PR matrix plan `prod` without tripping prod's reviewers.
+    environment: ${{ inputs.action == 'apply' && inputs.environment || '' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_WORKSPACE: app-${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          cli_config_credentials_token: ${{ secrets.tf_api_token }}
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Confirm target
+        run: |
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Action:      ${{ inputs.action }}"
+          echo "Workspace:   $(terraform workspace show)"
+
+      - name: Plan
+        if: inputs.action == 'plan'
+        run: terraform plan -input=false
+
+      - name: Apply
+        if: inputs.action == 'apply'
+        # auto_approve=false leaves the run awaiting "Confirm & Apply" in HCP
+        # (used for prod). true confirms from the CLI (used for dev).
+        run: terraform apply -input=false ${{ inputs.auto_approve && '-auto-approve' || '' }}

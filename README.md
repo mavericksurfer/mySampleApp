@@ -196,5 +196,25 @@ terraform-azure-app/
 │   ├── variables.tf        # typed config object, optional() defaults, validation
 │   ├── versions.tf         # module provider requirements
 │   └── outputs.tf
-└── .github/workflows/terraform.yml
+└── .github/workflows/
+    ├── terraform.yml       # caller: maps PR / push / manual triggers to tf-run
+    └── tf-run.yml          # reusable: init + plan/apply against one workspace
 ```
+
+## CI/CD structure
+
+The pipeline uses a **reusable workflow** so the Terraform logic isn't
+duplicated across triggers:
+
+- **`tf-run.yml`** (`workflow_call`) — the single definition of "run Terraform
+  against `app-<environment>`". Inputs: `environment`, `action` (plan/apply),
+  `auto_approve`, `working_directory`, `terraform_version`. It attaches the
+  GitHub Environment gate only for `apply` (so plans never need approval), and
+  `auto_approve: false` parks a prod apply in HCP for manual confirmation.
+- **`terraform.yml`** — the caller. `validate` runs once on PRs; `plan` calls
+  `tf-run` in a dev/prod matrix; `apply-dev` → `apply-prod` call it on push;
+  `manual` calls it for a dispatched environment/action.
+
+To change the runner Terraform version in one place, edit the
+`terraform_version` default in `tf-run.yml` (and the `validate` job in
+`terraform.yml`).
