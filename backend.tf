@@ -3,7 +3,7 @@ terraform {
 
   # HCP Terraform (Terraform Cloud) — CLI-driven workflow.
   # Using `tags` (instead of a fixed `name`) lets ONE config target
-  # multiple workspaces: app-dev, app-test, app-prod.
+  # multiple workspaces: app-dev, app-prod.
   # The specific workspace is chosen at runtime via the TF_WORKSPACE
   # environment variable (set per-environment in the GitHub workflow).
   cloud {
@@ -17,11 +17,11 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "~> 4.0"
+      version = "~> 4.80.0" # patch-flexible pin (no lock file committed)
     }
     random = {
       source  = "hashicorp/random"
-      version = "~> 3.6"
+      version = "~> 3.9.0"
     }
   }
 }

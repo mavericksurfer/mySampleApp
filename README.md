@@ -46,9 +46,15 @@ No secret is stored in GitHub or HCP:
 ## One-time setup
 
 ### 1. Create the two workspaces in HCP Terraform
-Create `app-dev` and `app-prod`, each tagged `app` and `azure` (matches the
+Create `app-dev` and `app-prod`, each tagged `demoapp` and `azure` (matches the
 `tags` filter in `backend.tf`). Set **Execution Mode = Remote** and
 **Workflow = CLI-driven**.
+
+Set **Auto-apply** deliberately per environment:
+- `app-dev` → **Auto-apply ON** (dev applies automatically on merge).
+- `app-prod` → **Auto-apply OFF** — the prod pipeline creates a run that plans
+  and runs any policy checks, then **parks awaiting a human "Confirm & Apply" in
+  the HCP UI**, so an operator reviews the exact plan before it applies.
 
 ### 2. Create an Azure App Registration per subscription + federated credentials
 For each environment, create an App Registration (no client secret) and grant
@@ -95,7 +101,17 @@ Add a repo secret `TF_API_TOKEN` (Settings → Secrets and variables → Actions
 
 ### 5. (Recommended) Create GitHub Environments
 Create `dev` and `prod` under Settings → Environments; add **required
-reviewers** to `prod` so `apply-prod` pauses for approval.
+reviewers** to `prod`. Note this is a *coarse* gate — it controls **who may
+start** the prod job (i.e. create the prod run), not which plan applies. The
+exact-plan review happens in HCP (Auto-apply OFF, step 1). Keeping both is
+defense-in-depth.
+
+### 5b. (Recommended) Protect the main branch
+Under Settings → Branches, protect `main`: require a PR before merging, require
+the dev/prod plan checks to pass, require CODEOWNERS review (especially for
+`.github/workflows/**` and `*.tf`), and block force pushes. The apply pipeline
+runs on any push to `main`, so branch protection is what makes "merge" the only
+path to production.
 
 ### 6. Update the placeholders
 - `backend.tf`: `organization = "AzureArchitectAU"`
@@ -116,15 +132,41 @@ terraform apply
 ## Day-to-day flow
 
 1. Open a PR → **plan** runs a speculative plan for both envs.
-2. Merge to `main` → **apply-dev → apply-prod** run in order; `apply-prod`
-   waits for approval if you configured the environment gate.
+2. Merge to `main` →
+   - **apply-dev** applies automatically.
+   - **apply-prod** (after the GitHub environment approval) creates the prod run
+     and **hands off to HCP**. Because `app-prod` has Auto-apply OFF and the job
+     runs `terraform apply` *without* `-auto-approve`, the run plans + runs
+     policies, then waits in HCP. Open the run, review the exact plan, and click
+     **Confirm & Apply**.
+
+> Expected quirk: the `apply-prod` GitHub job ends *without* completing the apply
+> (it can report a non-zero exit) because it's waiting on a human in HCP. That's
+> normal — it means "prod run created, go confirm it in HCP," not a failure. If
+> you'd rather the GitHub job report clean status for a manual-apply run, switch
+> the prod job to HashiCorp's [`tfc-workflows-github`](https://github.com/hashicorp/tfc-workflows-github)
+> actions (API-driven), which create and track the run without a CLI confirm.
+
+### Manual runs (Actions tab)
+You can also trigger the workflow by hand: **Actions → Terraform (HCP
+CLI-driven) → Run workflow**. Two inputs appear:
+- **Environment** — a dropdown populated from your repo's configured GitHub
+  Environments (`dev`, `prod`), so those must exist (setup step 5).
+- **Action** — `plan` (default, safe) or `apply`.
+
+The manual job targets `app-<environment>` and honours the same gates: selecting
+`prod` triggers the environment's required-reviewer approval, and a prod `apply`
+parks in HCP for confirmation exactly like the push pipeline.
 
 ## Adding another environment (the "vending" idea)
 
 Adding `staging` is a data change, not a module change:
-1. Create workspace `app-staging` (+ federated creds + `ARM_SUBSCRIPTION_ID`).
+1. Create workspace `app-staging` (+ federated creds + `ARM_SUBSCRIPTION_ID`,
+   and set its Auto-apply as desired).
 2. Add a `staging:` block under `environments:` in `apps/demoapp.yaml`.
-3. Add `staging` to the workflow matrix.
+3. Add `staging` to the PR **plan** matrix, and add an `apply-staging` job in the
+   promotion chain (copy `apply-dev`, set `TF_WORKSPACE: app-staging` and
+   `environment: staging`).
 
 The module needs no edit — it accepts any well-formed environment name, and the
 root precondition fails clearly if a workspace points at an environment that
@@ -144,7 +186,7 @@ TF_WORKSPACE=app-prod terraform destroy
 ```
 terraform-azure-app/
 ├── backend.tf              # HCP cloud block (tags-based, CLI-driven)
-├── providers.tf            # azurerm provider, use_oidc = true
+├── providers.tf            # azurerm provider, use_oidc + core RP registration
 ├── main.tf                 # derive env, load app YAML, resolve slice, call module
 ├── outputs.tf
 ├── apps/

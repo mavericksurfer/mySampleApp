@@ -1,33 +1,115 @@
 name: Terraform (HCP CLI-driven)
 
-# Plan on every PR; apply dev -> prod on merge to main.
+# Plan on every PR; on merge to main, apply dev automatically and create a prod
+# run that a human confirms in HCP Terraform. Also runnable manually from the
+# Actions tab (workflow_dispatch) against a chosen environment.
+#
+# Only paths that affect the infra trigger the automatic runs.
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "**/*.tf"
+      - "**/*.tf.json"
+      - "apps/**/*.yaml"
+      - ".github/workflows/terraform.yml"
   push:
     branches: [main]
+    paths:
+      - "**/*.tf"
+      - "**/*.tf.json"
+      - "apps/**/*.yaml"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to target
+        # `type: environment` renders a dropdown populated from the repo's
+        # configured Environments (Settings -> Environments: dev, prod).
+        type: environment
+        required: true
+      action:
+        description: Terraform action to run
+        type: choice
+        options:
+          - plan
+          - apply
+        default: plan
+        required: true
 
-# GitHub only holds TF_API_TOKEN (to reach HCP). Runs execute REMOTELY in HCP
-# Terraform, which federates into Azure via OIDC — no Azure secrets anywhere in
-# GitHub or HCP. No -var-file is needed: the workspace name selects the
-# environment and its YAML config.
+# Auth model:
+#   GitHub -> HCP : the HCP token, passed ONLY to setup-terraform's CLI config
+#                   (not exposed as a workflow-wide env var).
+#   HCP    -> Azure: OIDC dynamic credentials on each workspace — no Azure
+#                    secrets in GitHub or HCP.
+# This assumes both workspaces use Remote execution mode (a workspace setting);
+# the TFC_*/ARM_* variable injection only happens on remote/agent runs.
+#
+# How environment selection works: it is implemented in Terraform, not by the
+# runner. main.tf derives the environment from the workspace name
+# (trimprefix(terraform.workspace, "app-")) and loads apps/demoapp.yaml, so no
+# -var-file is passed here. The YAML lives in the uploaded config dir.
 env:
   TF_CLOUD_ORGANIZATION: AzureArchitectAU # <-- your HCP org
-  TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
   TF_IN_AUTOMATION: "true"
   CONFIG_DIR: .
 
+# Least privilege: nothing here writes to the PR, so read-only is enough.
+# (If you later add a plan-comment step, grant pull-requests: write on that job.)
 permissions:
   contents: read
-  pull-requests: write
+
+# Serialize main-branch promotions so commits can't apply out of order, key
+# manual runs per environment, and supersede stale PR plans. Deployments are
+# never cancelled mid-flight.
+concurrency:
+  group: >-
+    terraform-${{
+      github.event_name == 'push' && 'main-promotion'
+      || github.event_name == 'workflow_dispatch' && format('manual-{0}', inputs.environment)
+      || format('pr-{0}', github.event.pull_request.number) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ---------------------------------------------------------------------------
-  # PR: speculative plan for both environments (no apply).
+  # PR: static checks — environment-agnostic, so run ONCE (not per matrix env).
+  # ---------------------------------------------------------------------------
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ env.CONFIG_DIR }}
+    # Static checks are environment-agnostic. `-backend=false` installs only
+    # providers + modules (all `validate` needs) and skips cloud/backend init,
+    # so this job needs neither TF_WORKSPACE nor the HCP token (least privilege).
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8" # pin the CLI; bump deliberately
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init (providers + modules only)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
+
+  # ---------------------------------------------------------------------------
+  # PR: speculative remote plan per environment. Only this uses the matrix.
+  # Runs after static checks pass. `init` is unavoidable here (each parallel
+  # runner needs the backend initialized before it can plan).
   # ---------------------------------------------------------------------------
   plan:
     if: github.event_name == 'pull_request'
+    needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         environment: [dev, prod]
@@ -41,26 +123,69 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: "1.9.8"
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
 
       - name: Init
         run: terraform init -input=false
 
-      - name: Format check
-        run: terraform fmt -check -recursive
-
-      - name: Validate
-        run: terraform validate
+      - name: Confirm target workspace
+        run: |
+          echo "Expected: app-${{ matrix.environment }}"
+          echo "Actual:   $(terraform workspace show)"
 
       - name: Plan (${{ matrix.environment }})
         run: terraform plan -input=false
 
   # ---------------------------------------------------------------------------
-  # main: apply dev, then prod (targets the Prod subscription).
+  # Manual run (Actions tab -> Run workflow): pick the environment from the
+  # dropdown and whether to plan or apply. Attaching `environment:` to the
+  # selected input means prod's required-reviewer gate applies here too, and
+  # prod applies park in HCP for confirmation (no -auto-approve).
+  # ---------------------------------------------------------------------------
+  manual:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ env.CONFIG_DIR }}
+    env:
+      TF_WORKSPACE: app-${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Confirm target
+        run: |
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Action:      ${{ inputs.action }}"
+          echo "Workspace:   $(terraform workspace show)"
+
+      - name: Plan
+        if: inputs.action == 'plan'
+        run: terraform plan -input=false
+
+      - name: Apply
+        if: inputs.action == 'apply'
+        # Auto-approve everywhere except prod, which parks for HCP confirmation.
+        run: terraform apply -input=false ${{ inputs.environment != 'prod' && '-auto-approve' || '' }}
+
+  # ---------------------------------------------------------------------------
+  # main: apply dev automatically.
   # ---------------------------------------------------------------------------
   apply-dev:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: dev
     defaults:
       run:
@@ -71,16 +196,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: "1.9.8"
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
       - run: terraform init -input=false
       - run: terraform apply -auto-approve -input=false
 
+  # ---------------------------------------------------------------------------
+  # main: create the prod run, but DO NOT auto-approve it.
+  #
+  # With `app-prod` set to Auto-apply = OFF in HCP and no `-auto-approve` here,
+  # this job creates a run that plans + runs any Sentinel/OPA policies, then
+  # parks in HCP awaiting "Confirm & Apply". An operator reviews the EXACT plan
+  # in the HCP UI and confirms it there.
+  #
+  # Expected UX: because the run waits for a human, this non-interactive job
+  # ends WITHOUT completing the apply (it may report a non-zero exit). That is
+  # normal — it means "prod run created, go approve it in HCP", not a failure.
+  # The GitHub Environment gate below is a coarser "who may create the prod run"
+  # control, kept as defense-in-depth alongside the HCP confirmation.
+  # ---------------------------------------------------------------------------
   apply-prod:
     if: github.event_name == 'push'
     needs: apply-dev
     runs-on: ubuntu-latest
-    # Attach a GitHub "prod" Environment with required reviewers so this
-    # job pauses for manual approval before touching the Prod subscription.
+    timeout-minutes: 30
     environment: prod
     defaults:
       run:
@@ -91,6 +230,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
         with:
+          terraform_version: "1.9.8"
           cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
       - run: terraform init -input=false
-      - run: terraform apply -auto-approve -input=false
+      # No -auto-approve: the operator confirms the exact plan in HCP.
+      - run: terraform apply -input=false
